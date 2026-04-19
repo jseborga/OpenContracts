@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **EasyPanel deployment kit**:
+  - **`easypanel.yml`** — dedicated Compose file parameterised entirely by environment variables (no `.envs/.production/*` files), with no bundled Traefik service: EasyPanel's built-in proxy handles TLS and domain routing. Missing required secrets fail-fast thanks to `${VAR:?error}` syntax.
+  - **`scripts/easypanel/print-env.sh`** — prints a ready-to-paste `KEY=value` block for the EasyPanel app's Environment tab, with all random secrets (`DJANGO_SECRET_KEY`, admin URL slug, Postgres password, Flower creds, vector-embedder API key) pre-generated.
+  - **`scripts/easypanel/deploy.sh`** — optional one-command bootstrap for folks SSH-ing into the host (wraps generate-env + configure-traefik + docker compose build/migrate/up + smoke test of the Bolivian-laws scrape). Used with the legacy `production.yml`.
+  - Building blocks for the legacy flow: commit-able env templates under `.envs.example/.production/`, `scripts/easypanel/generate-env.sh`, `scripts/easypanel/configure-traefik.sh`.
+  - Docs (`docs/deployment/easypanel.md`) rewritten around the GitHub-native flow: paste env vars → wire domain → deploy.
+- **Bolivian Laws RAG service** (`opencontractserver/bolivian_laws/`): multi-agent RAG over Bolivian legal sources, organised by legal area to keep embeddings cost-aware and retrieval precise.
+  - One Corpus per `LegalArea` (constitucional, penal, civil, administrativo, laboral, tributario, familia, comercial, agrario, ambiental, otros), seeded idempotently from `AREA_PROFILES` (`opencontractserver/bolivian_laws/constants.py`).
+  - Tracking model `BolivianLegalDocument` with global SHA-256 dedupe and source attribution (`gaceta`, `tsj`, `tcp`, `manual`).
+  - Bulk ingestion via management command `python manage.py ingest_bolivian_laws --path ... --area ...` with optional LLM-based `--auto-classify`, dry-run and async (Celery) modes.
+  - Specialist agents per area + orchestrator agent (pydantic_ai) that routes questions to one or more specialists and synthesises answers (`opencontractserver/bolivian_laws/services/agents.py`).
+  - GraphQL mutation `askBolivianLaw(question, areas?)` returns the synthesised answer plus area-tagged source citations (`config/graphql/bolivian_laws_mutations.py`).
+  - Settings: `BOLIVIAN_LAWS_DEFAULT_EMBEDDER`, `BOLIVIAN_LAWS_CLASSIFIER_MODEL`, `BOLIVIAN_LAWS_ORCHESTRATOR_MODEL`, `BOLIVIAN_LAWS_SPECIALIST_MODEL` (`config/settings/base.py`).
+  - Documentation in `docs/features/bolivian_laws_rag.md`.
+- **Bolivian Laws automatic scrapers** (`opencontractserver/bolivian_laws/scrapers/`): three pluggable scrapers that fetch legal PDFs from the Gaceta Oficial (`gacetaoficialdebolivia.gob.bo`), Tribunal Supremo de Justicia (`tsj.bo`) and Tribunal Constitucional Plurinacional (`tcpbolivia.bo`).
+  - `BaseScraper` with injectable `httpx.Client`, configurable User-Agent, rate limiting, and defensive per-listing error handling so a single broken page cannot abort a batch.
+  - Per-source classes (`GacetaOficialScraper`, `TribunalSupremoJusticiaScraper`, `TribunalConstitucionalScraper`) extract best-effort metadata: external ID (e.g. `LEY-1178`, `AS-123/2023`, `SCP-0250/2012`), publication date, and a suggested `LegalArea` via keyword heuristics (sala name for TSJ, SAFCO/tributario/etc. for Gaceta, always `constitucional` for TCP).
+  - Celery tasks `scrape_and_ingest_source(source_key)` and `scrape_and_ingest_all()` (`opencontractserver/bolivian_laws/tasks.py`). A SHA-256 pre-check before `ingest_pdf` makes re-runs cheap; download failures are logged and counted per-source without aborting the batch.
+  - New Beat schedule entry `bolivian-laws-scrape-all` running once daily (`config/settings/base.py`).
+  - Management command `python manage.py scrape_bolivian_laws [--source gaceta|tsj|tcp | --all] [--since-days N] [--max-entries N] [--sync]` for on-demand runs.
+  - Settings: `BOLIVIAN_LAWS_{GACETA,TSJ,TCP}_BASE_URL` / `_LISTING_PATHS`, `BOLIVIAN_LAWS_SCRAPER_USER_AGENT`, `BOLIVIAN_LAWS_SCRAPE_LOOKBACK_DAYS`, `BOLIVIAN_LAWS_REQUEST_DELAY_SECONDS`.
+  - Added `beautifulsoup4>=4.12,<5` to `requirements/base.txt` for HTML parsing.
+  - Tests use `httpx.MockTransport` with inline HTML fixtures; no real HTTP traffic.
+
 ### Fixed
 
 - **GraphQL security hardening cleanup** (Issue #1198):
